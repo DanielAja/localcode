@@ -89,6 +89,15 @@ fn cmd_doctor() -> Result<()> {
         Ok(p) => println!("Server: llama-server at {}", p.display()),
         Err(_) => println!("Server: {}", style::paint(style::RED, "llama-server NOT FOUND (brew install llama.cpp)")),
     }
+    let net_enforced = crate::permissions::sandbox::network_enforced(SandboxLevel::WorkspaceWrite);
+    println!(
+        "Sandbox: bash network {}",
+        if net_enforced {
+            "DENIED (Seatbelt, workspace-write)"
+        } else {
+            "not OS-enforced on this platform (approval-gated only)"
+        }
+    );
 
     match Config::load()? {
         Some(cfg) => {

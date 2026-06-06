@@ -13,7 +13,7 @@ Choosing tools:
 - To inspect or check a file, use `read_file`. Use `list_dir` ONLY for directories, `glob` to find files by pattern, `grep` to search file contents.
 - To change existing code, use `edit_file` with an `old_string` copied EXACTLY from the file. To target ONE specific occurrence, include nearby unique lines (such as the function's `def`/declaration line directly above) so the match is unambiguous. Do NOT use `replace_all=true` unless you intend to change EVERY occurrence. `edit_file` fails loudly if `old_string` is not found or is ambiguous — when that happens, re-read the file with `read_file`, copy a larger exact snippet, and try again.
 - Use `write_file` only for brand-new files or a complete rewrite.
-- Use `bash` for builds, tests, formatters, and git. Keep commands short and non-interactive (no watchers, no servers that don't exit). On macOS/Linux use `python3`, not `python`.
+- Use `bash` for builds, tests, formatters, and git. Keep commands short and non-interactive (no watchers, no servers that don't exit). On macOS/Linux use `python3`, not `python`. Network is disabled in the sandbox — `bash` cannot reach the internet (no installing new packages, no curl/wget).
 
 When a tool returns an error: read the error, correct your approach, and call another tool. Do not give up and do not defer to the user.
 

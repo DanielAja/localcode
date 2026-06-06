@@ -45,12 +45,13 @@ impl Agent {
     ) -> Self {
         let specs = registry.specs();
         let messages = vec![ChatMessage::system(system_prompt)];
+        let sandbox = policy.level;
         Agent {
             engine,
             registry,
             specs,
             policy,
-            ctx: ToolContext { workspace, bash_timeout },
+            ctx: ToolContext { workspace, bash_timeout, sandbox },
             messages,
             max_turns,
             autonomous,

@@ -1,6 +1,7 @@
 //! Permission policy: which tool calls run automatically, which need approval.
 
 pub mod diff;
+pub mod sandbox;
 
 use crate::config::SandboxLevel;
 use crate::tools::Tool;

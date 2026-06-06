@@ -3,6 +3,7 @@
 //! Edits use fail-loud search/replace (never silent no-op). File tools are jailed
 //! to the workspace. Bash runs with a real timeout (reader threads + kill).
 
+use crate::config::SandboxLevel;
 use crate::engine::ToolSpec;
 use crate::Result;
 use anyhow::{anyhow, bail};
@@ -32,6 +33,8 @@ pub struct ToolContext {
     /// Canonical, absolute workspace root. All file ops are jailed under it.
     pub workspace: PathBuf,
     pub bash_timeout: Duration,
+    /// Sandbox level (drives OS-level confinement of `bash`).
+    pub sandbox: SandboxLevel,
 }
 
 pub trait Tool: Send + Sync {
@@ -534,7 +537,8 @@ impl Tool for BashTool {
         let timeout = arg_u64_opt(args, "timeout_ms")
             .map(Duration::from_millis)
             .unwrap_or(ctx.bash_timeout);
-        let (code, output, timed_out) = run_bash(command, &ctx.workspace, timeout)?;
+        let cmd = crate::permissions::sandbox::bash_command(ctx.sandbox, command);
+        let (code, output, timed_out) = run_bash(cmd, &ctx.workspace, timeout)?;
         let mut content = output;
         if content.len() > 16_000 {
             let tail = &content[content.len() - 16_000..];
@@ -553,14 +557,12 @@ impl Tool for BashTool {
     }
 }
 
-/// Run a shell command with a hard timeout. Returns (exit_code, combined_output, timed_out).
-fn run_bash(command: &str, cwd: &Path, timeout: Duration) -> Result<(i32, String, bool)> {
-    use std::process::{Command, Stdio};
+/// Run a prepared shell command with a hard timeout. Returns (exit_code, combined_output, timed_out).
+fn run_bash(mut cmd: std::process::Command, cwd: &Path, timeout: Duration) -> Result<(i32, String, bool)> {
+    use std::process::Stdio;
     use std::thread;
 
-    let mut child = Command::new("/bin/sh")
-        .arg("-c")
-        .arg(command)
+    let mut child = cmd
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
