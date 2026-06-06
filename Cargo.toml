@@ -1,0 +1,61 @@
+[package]
+name = "localcode"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "A 100% local, on-device CLI AI coding agent (like Claude Code, but offline)"
+license = "Apache-2.0"
+default-run = "localcode"
+
+[[bin]]
+name = "localcode"
+path = "src/main.rs"
+
+[lib]
+name = "localcode"
+path = "src/lib.rs"
+
+[dependencies]
+# async runtime + process management
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "process", "time", "sync", "signal", "fs"] }
+futures-util = "0.3"
+
+# HTTP client for the local OpenAI-compatible llama-server endpoint + downloads
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+
+# serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# errors + logging
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# files / search
+ignore = "0.4"
+regex = "1"
+dirs = "5"
+glob = "0.3"
+
+# diff rendering for edit approvals
+similar = "2"
+
+# hardware scan + downloads (M3)
+sysinfo = "0.33"
+sha2 = "0.10"
+indicatif = "0.17"
+inquire = "0.7"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
