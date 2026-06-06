@@ -3,6 +3,8 @@
 //! Edits use fail-loud search/replace (never silent no-op). File tools are jailed
 //! to the workspace. Bash runs with a real timeout (reader threads + kill).
 
+mod web;
+
 use crate::config::SandboxLevel;
 use crate::engine::ToolSpec;
 use crate::Result;
@@ -64,6 +66,8 @@ pub fn default_registry() -> Registry {
             Box::new(GrepTool),
             Box::new(BashTool),
             Box::new(TodoWriteTool),
+            Box::new(web::WebSearchTool),
+            Box::new(web::WebFetchTool),
         ],
     }
 }

@@ -21,7 +21,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "pr
 futures-util = "0.3"
 
 # HTTP client for the local OpenAI-compatible llama-server endpoint + downloads
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "blocking"] }
+
+# web search + fetch (the agent's "search the web" capability)
+scraper = "0.20"
+urlencoding = "2"
 
 # serialization
 serde = { version = "1", features = ["derive"] }
