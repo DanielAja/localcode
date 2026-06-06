@@ -8,7 +8,7 @@ use crate::engine::{
 };
 use crate::permissions::Policy;
 use crate::ui::{style, LineUi};
-use crate::{hardware, models, tools};
+use crate::{hardware, models, onboarding, tools};
 use crate::Result;
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
@@ -44,6 +44,8 @@ enum Commands {
     Doctor,
     /// List the verified models the tool can use.
     Models,
+    /// Run first-run setup: hardware scan → model pick → download → config.
+    Setup,
 }
 
 pub async fn run() -> Result<()> {
@@ -60,6 +62,7 @@ pub async fn run() -> Result<()> {
     match cli.command {
         Some(Commands::Doctor) => cmd_doctor(),
         Some(Commands::Models) => cmd_models(),
+        Some(Commands::Setup) => onboarding::run_wizard().await.map(|_| ()),
         Some(Commands::Run) | None => cmd_run(cli).await,
     }
 }
@@ -106,9 +109,13 @@ async fn cmd_run(cli: Cli) -> Result<()> {
     let workspace = std::env::current_dir()?
         .canonicalize()
         .context("resolving current directory as workspace")?;
-    let config = Config::load()?;
+    let mut config = Config::load()?;
 
     let non_interactive = cli.print.is_some();
+    // First run (no config), interactive, not attaching → onboard before continuing.
+    if config.is_none() && cli.attach.is_none() && !non_interactive {
+        config = Some(onboarding::run_wizard().await?);
+    }
     let (engine, alias) = build_engine(&cli, config.as_ref()).await?;
 
     let registry = tools::default_registry();

@@ -1,5 +1,6 @@
-//! Model registry (verified tiers) + on-disk model discovery. The download/registry
-//! UX is fleshed out in M3; this holds the verified v1 lineup and a cache scanner.
+//! Model registry (verified tiers), recommendation, and on-disk discovery.
+
+pub mod download;
 
 use std::path::{Path, PathBuf};
 
@@ -46,6 +47,19 @@ pub const VERIFIED: &[ModelEntry] = &[
         note: "32 GB+ default. MoE (3.3B active) → fast; native tool-calling.",
     },
 ];
+
+/// Recommend the largest verified model that fits the device's RAM tier and free disk.
+pub fn recommend(total_ram_gb: f64, free_disk_gb: f64) -> Option<&'static ModelEntry> {
+    VERIFIED
+        .iter()
+        .filter(|m| m.min_ram_gb <= total_ram_gb + 0.5 && m.approx_gb * 1.15 <= free_disk_gb)
+        .max_by(|a, b| a.approx_gb.partial_cmp(&b.approx_gb).unwrap_or(std::cmp::Ordering::Equal))
+}
+
+/// Find a verified entry by alias.
+pub fn by_alias(alias: &str) -> Option<&'static ModelEntry> {
+    VERIFIED.iter().find(|m| m.alias == alias)
+}
 
 /// Find the first `*.gguf` in a directory (used until the registry/download lands).
 pub fn find_model_in_dir(dir: &Path) -> Option<PathBuf> {
