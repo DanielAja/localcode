@@ -369,6 +369,15 @@ impl Engine {
     }
 }
 
+/// Quick health probe of a base URL (e.g. to reuse an already-running server).
+pub async fn ping(base_url: &str) -> bool {
+    let url = format!("{}/health", base_url.trim_end_matches('/'));
+    matches!(
+        reqwest::Client::new().get(&url).timeout(Duration::from_secs(1)).send().await,
+        Ok(r) if r.status().is_success()
+    )
+}
+
 fn normalize_base(mut s: String) -> String {
     while s.ends_with('/') {
         s.pop();

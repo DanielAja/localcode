@@ -13,7 +13,6 @@ use crate::Result;
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
 use std::io::Write;
-use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
@@ -48,6 +47,8 @@ enum Commands {
     Setup,
     /// Measure how reliably the configured model picks the right tool.
     Eval,
+    /// Keep a warmed model server running so other runs start instantly.
+    Serve,
 }
 
 pub async fn run() -> Result<()> {
@@ -66,6 +67,7 @@ pub async fn run() -> Result<()> {
         Some(Commands::Models) => cmd_models(),
         Some(Commands::Setup) => onboarding::run_wizard().await.map(|_| ()),
         Some(Commands::Eval) => cmd_eval(cli).await,
+        Some(Commands::Serve) => cmd_serve().await,
         Some(Commands::Run) | None => cmd_run(cli).await,
     }
 }
@@ -195,7 +197,7 @@ async fn cmd_run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-/// Build the engine: either attach to an endpoint, or spawn+own a local llama-server.
+/// Build the engine: attach to `--attach`, reuse a running server, or spawn one.
 async fn build_engine(cli: &Cli, config: Option<&Config>) -> Result<(Engine, String)> {
     let temperature = config.map(|c| c.temperature).unwrap_or(0.2);
 
@@ -208,17 +210,29 @@ async fn build_engine(cli: &Cli, config: Option<&Config>) -> Result<(Engine, Str
     let default = Config::default();
     let cfg = config.unwrap_or(&default);
 
-    let model_path: PathBuf = cfg
+    // Reuse a server already listening on our port (e.g. `localcode serve`) — skips reload.
+    let url = format!("http://127.0.0.1:{}", cfg.port);
+    if crate::engine::ping(&url).await {
+        eprintln!("{}", style::paint(style::GREY, &format!("reusing running server at {url}")));
+        return Ok((Engine::attached(url, cfg.model_alias.clone(), temperature), cfg.model_alias.clone()));
+    }
+
+    let server = spawn_server(cfg).await?;
+    Ok((Engine::owning(server, cfg.model_alias.clone(), temperature), cfg.model_alias.clone()))
+}
+
+/// Provision + spawn + health-check a llama-server from config.
+async fn spawn_server(cfg: &Config) -> Result<LlamaServer> {
+    let model_path = cfg
         .model_path
         .clone()
         .or_else(|| models::find_model_in_dir(&config::models_dir()))
         .ok_or_else(|| {
             anyhow!(
-                "no model available. Download a GGUF into {} (or run onboarding).",
+                "no model available — run `localcode setup` or put a GGUF in {}",
                 config::models_dir().display()
             )
         })?;
-
     let bin = provision::find_llama_server(cfg.llama_server_bin.as_deref())?;
     let opts = ServerOpts {
         bin,
@@ -248,7 +262,31 @@ async fn build_engine(cli: &Cli, config: Option<&Config>) -> Result<(Engine, Str
         .await
         .context("waiting for llama-server to become healthy")?;
     eprintln!("{}", style::paint(style::GREEN, "server ready."));
-    Ok((Engine::owning(server, cfg.model_alias.clone(), temperature), cfg.model_alias.clone()))
+    Ok(server)
+}
+
+/// `localcode serve` — keep a warmed server running so other invocations are instant.
+async fn cmd_serve() -> Result<()> {
+    let config = Config::load()?;
+    let default = Config::default();
+    let cfg = config.as_ref().unwrap_or(&default);
+    let url = format!("http://127.0.0.1:{}", cfg.port);
+    if crate::engine::ping(&url).await {
+        println!("Server already running at {url}");
+        return Ok(());
+    }
+    let server = spawn_server(cfg).await?;
+    println!(
+        "{}",
+        style::paint(
+            style::GREEN,
+            &format!("localcode server ready at {url} (model {}). Press Ctrl-C to stop.", cfg.model_alias)
+        )
+    );
+    let _ = tokio::signal::ctrl_c().await;
+    println!("\nstopping server…");
+    server.shutdown().await;
+    Ok(())
 }
 
 fn print_banner(alias: &str, workspace: &std::path::Path) {
