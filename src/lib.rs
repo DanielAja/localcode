@@ -7,6 +7,7 @@ pub mod agent;
 pub mod cli;
 pub mod config;
 pub mod engine;
+pub mod eval;
 pub mod hardware;
 pub mod models;
 pub mod onboarding;

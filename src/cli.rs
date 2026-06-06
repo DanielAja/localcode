@@ -8,7 +8,7 @@ use crate::engine::{
 };
 use crate::permissions::Policy;
 use crate::ui::{style, LineUi};
-use crate::{hardware, models, onboarding, tools};
+use crate::{eval, hardware, models, onboarding, tools};
 use crate::Result;
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
@@ -46,6 +46,8 @@ enum Commands {
     Models,
     /// Run first-run setup: hardware scan → model pick → download → config.
     Setup,
+    /// Measure how reliably the configured model picks the right tool.
+    Eval,
 }
 
 pub async fn run() -> Result<()> {
@@ -63,8 +65,19 @@ pub async fn run() -> Result<()> {
         Some(Commands::Doctor) => cmd_doctor(),
         Some(Commands::Models) => cmd_models(),
         Some(Commands::Setup) => onboarding::run_wizard().await.map(|_| ()),
+        Some(Commands::Eval) => cmd_eval(cli).await,
         Some(Commands::Run) | None => cmd_run(cli).await,
     }
+}
+
+async fn cmd_eval(cli: Cli) -> Result<()> {
+    let config = Config::load()?;
+    let (engine, alias) = build_engine(&cli, config.as_ref()).await?;
+    let workspace = std::env::current_dir()?;
+    let registry = tools::default_registry();
+    let system = crate::agent::DEFAULT_SYSTEM.replace("{WORKSPACE}", &workspace.display().to_string());
+    println!("model: {alias}\n");
+    eval::run(&engine, &registry, &system).await
 }
 
 fn cmd_doctor() -> Result<()> {
