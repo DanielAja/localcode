@@ -12,11 +12,15 @@ use crate::{eval, hardware, models, onboarding, tools};
 use crate::Result;
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
-#[command(name = "localcode", version, about = "A 100% local, on-device CLI AI coding agent")]
+#[command(
+    name = "localcode",
+    version = concat!(env!("CARGO_PKG_VERSION"), "  ·  your code, your machine, your rules"),
+    about = "A 100% local, on-device CLI AI coding agent"
+)]
 pub struct Cli {
     /// Talk to an already-running OpenAI-compatible endpoint instead of spawning one
     /// (e.g. http://127.0.0.1:8080 for an external llama-server or Ollama).
@@ -60,6 +64,9 @@ pub async fn run() -> Result<()> {
         .with_writer(std::io::stderr)
         .without_time()
         .init();
+
+    // Colors on only for an interactive TTY without NO_COLOR.
+    style::set_enabled(std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none());
 
     let cli = Cli::parse();
     match cli.command {
@@ -292,11 +299,20 @@ async fn cmd_serve() -> Result<()> {
 
 fn print_banner(alias: &str, workspace: &std::path::Path) {
     println!(
-        "{}  {}\nmodel: {}   workspace: {}\nType your request, or /help. /exit to quit.\n",
-        style::paint(style::BOLD, "localcode"),
-        style::paint(style::GREY, "— on-device coding agent"),
-        style::paint(style::CYAN, alias),
-        workspace.display()
+        "\n{} {}",
+        style::paint(style::CYAN, "◢◤ localcode"),
+        style::paint(style::GREY, "· on-device AI coding — everything stays local")
+    );
+    println!(
+        "  {} {}   {} {}",
+        style::paint(style::GREY, "model"),
+        style::paint(style::BOLD, alias),
+        style::paint(style::GREY, "workspace"),
+        style::paint(style::GREY, &workspace.display().to_string()),
+    );
+    println!(
+        "  {}\n",
+        style::paint(style::GREY, "type a request, or /help · /exit to quit")
     );
 }
 

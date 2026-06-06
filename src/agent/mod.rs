@@ -155,9 +155,6 @@ impl Agent {
         // If the user asked to run/verify/test, require an actual bash call before finishing.
         let needs_verify = self.last_user_text().map(|t| mentions_verification(&t)).unwrap_or(false);
         let mut bash_ran = false;
-        // Whether any tool has run this turn — used to push the model into acting if it
-        // only narrates a plan on the first move.
-        let mut any_tool_ran = false;
         // NOTE: we tried forcing tool_choice="required" on recovery turns, but it makes
         // llama-server hang for this Qwen2.5-Coder-7B GGUF (a GBNF grammar pathology).
         // So recovery relies on nudges + the echo guard instead.
@@ -192,10 +189,7 @@ impl Agent {
                 // in <tool_response> tags) instead of acting; treat that as a recovery case.
                 let echoing = trimmed.contains("<tool_response>") || trimmed.contains("</tool_response>");
                 let want_verify = needs_verify && !bash_ran;
-                // In a coding agent the first move should be a tool call; if the model
-                // only narrated a plan and did nothing, push it to act.
-                let only_narrated = !any_tool_ran && !trimmed.is_empty();
-                if nudges > 0 && (pending_error || want_verify || echoing || only_narrated || looks_unfinished(&trimmed)) {
+                if nudges > 0 && (pending_error || want_verify || echoing || looks_unfinished(&trimmed)) {
                     nudges -= 1;
                     // Error recovery takes priority over verification: if the last tool
                     // failed (or the model echoed), it must retry with a real tool call.
@@ -224,7 +218,6 @@ impl Agent {
             let mut loop_detected = false;
             for call in &extracted.calls {
                 pending_error = true; // cleared on a successful tool run below
-                any_tool_ran = true;
                 let name = call.function.name.clone();
                 let raw_args = &call.function.arguments;
 
@@ -354,7 +347,9 @@ fn looks_unfinished(text: &str) -> bool {
     }
     const CUES: &[&str] = &[
         "let's", "let me", "i'll", "i will", "next,", "now,", "now let", "we need to",
-        "should be", "first,", "then run", "run the", "please run", "you can run",
+        "then run", "run the", "please run", "you can run", "need to", "i need",
+        "to read", "to check", "to find", "to determine", "to do this", "going to",
+        "i should", "to fix", "to update", "to analyze", "to inspect", "first i",
     ];
     CUES.iter().any(|c| lower.contains(c))
 }

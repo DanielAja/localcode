@@ -36,8 +36,20 @@ pub mod style {
     pub const CYAN: &str = "\x1b[36m";
     pub const GREY: &str = "\x1b[90m";
 
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static COLOR: AtomicBool = AtomicBool::new(true);
+
+    /// Globally enable/disable ANSI color (off for non-TTY / NO_COLOR).
+    pub fn set_enabled(on: bool) {
+        COLOR.store(on, Ordering::Relaxed);
+    }
+
     pub fn paint(color: &str, s: &str) -> String {
-        format!("{color}{s}{RESET}")
+        if COLOR.load(Ordering::Relaxed) {
+            format!("{color}{s}{RESET}")
+        } else {
+            s.to_string()
+        }
     }
 }
 
@@ -47,11 +59,19 @@ pub struct LineUi {
     pub non_interactive: bool,
     /// Whether we've printed the assistant prefix for the current streamed message.
     mid_stream: bool,
+    /// A "thinking…" spinner shown while waiting for the first token.
+    spinner: Option<indicatif::ProgressBar>,
 }
 
 impl LineUi {
     pub fn new(non_interactive: bool) -> Self {
-        LineUi { non_interactive, mid_stream: false }
+        LineUi { non_interactive, mid_stream: false, spinner: None }
+    }
+
+    fn clear_spinner(&mut self) {
+        if let Some(pb) = self.spinner.take() {
+            pb.finish_and_clear();
+        }
     }
 }
 
@@ -94,9 +114,21 @@ impl Ui for LineUi {
 
     fn stream_start(&mut self) {
         self.mid_stream = false;
+        if !self.non_interactive {
+            let pb = indicatif::ProgressBar::new_spinner();
+            pb.set_style(
+                indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}")
+                    .unwrap()
+                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", " "]),
+            );
+            pb.set_message(style::paint(style::GREY, "thinking…"));
+            pb.enable_steady_tick(std::time::Duration::from_millis(80));
+            self.spinner = Some(pb);
+        }
     }
 
     fn stream_delta(&mut self, piece: &str) {
+        self.clear_spinner();
         if !self.mid_stream {
             print!("\n{} ", style::paint(style::GREEN, "⏺"));
             self.mid_stream = true;
@@ -106,6 +138,7 @@ impl Ui for LineUi {
     }
 
     fn stream_end(&mut self) {
+        self.clear_spinner();
         if self.mid_stream {
             println!();
             self.mid_stream = false;
