@@ -1,9 +1,10 @@
 //! UI abstraction so the agent loop is identical in line-mode and (later) TUI mode.
 
-/// A user-facing front-end for the agent loop. The line-mode implementation lives
-/// here; the ratatui inline-viewport implementation is added in M4.
+use std::io::Write;
+
+/// A user-facing front-end for the agent loop.
 pub trait Ui {
-    /// Final assistant prose for a turn (no tool calls), or interim prose.
+    /// Non-streamed assistant prose (used by paths that don't stream).
     fn assistant_message(&mut self, text: &str);
     /// An informational notice (status, warnings).
     fn notice(&mut self, text: &str);
@@ -13,6 +14,14 @@ pub trait Ui {
     fn tool_result(&mut self, name: &str, output: &str, is_error: bool);
     /// Ask the user to approve an action. `preview` is an optional rendered diff/command.
     fn confirm(&mut self, prompt: &str, preview: Option<&str>) -> bool;
+
+    // --- streaming (default no-ops; line-mode overrides) ---
+    /// Begin a streamed assistant message.
+    fn stream_start(&mut self) {}
+    /// A streamed text fragment.
+    fn stream_delta(&mut self, _piece: &str) {}
+    /// End a streamed assistant message.
+    fn stream_end(&mut self) {}
 }
 
 /// Simple ANSI helpers (kept dependency-free).
@@ -34,14 +43,15 @@ pub mod style {
 
 /// Line-mode (REPL) UI: streams plain lines to stdout, prompts with inquire.
 pub struct LineUi {
-    /// When true (non-interactive `--print`), approvals are answered automatically
-    /// by the policy, never by prompting.
+    /// Non-interactive (`--print`): approvals are answered by policy, never prompted.
     pub non_interactive: bool,
+    /// Whether we've printed the assistant prefix for the current streamed message.
+    mid_stream: bool,
 }
 
 impl LineUi {
     pub fn new(non_interactive: bool) -> Self {
-        LineUi { non_interactive }
+        LineUi { non_interactive, mid_stream: false }
     }
 }
 
@@ -71,7 +81,6 @@ impl Ui for LineUi {
 
     fn confirm(&mut self, prompt: &str, preview: Option<&str>) -> bool {
         if self.non_interactive {
-            // Should not happen (policy handles auto-approve), but be safe: deny.
             return false;
         }
         if let Some(p) = preview {
@@ -81,5 +90,25 @@ impl Ui for LineUi {
             .with_default(true)
             .prompt()
             .unwrap_or(false)
+    }
+
+    fn stream_start(&mut self) {
+        self.mid_stream = false;
+    }
+
+    fn stream_delta(&mut self, piece: &str) {
+        if !self.mid_stream {
+            print!("\n{} ", style::paint(style::GREEN, "⏺"));
+            self.mid_stream = true;
+        }
+        print!("{piece}");
+        let _ = std::io::stdout().flush();
+    }
+
+    fn stream_end(&mut self) {
+        if self.mid_stream {
+            println!();
+            self.mid_stream = false;
+        }
     }
 }

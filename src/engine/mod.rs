@@ -10,6 +10,7 @@ pub mod provision;
 
 use crate::Result;
 use anyhow::{anyhow, Context};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -156,6 +157,14 @@ pub struct Usage {
     pub total_tokens: u32,
 }
 
+/// Accumulator for tool-call fragments arriving across streaming deltas.
+#[derive(Default)]
+struct ToolCallAccum {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
 /// The engine: holds an HTTP client + base URL + model name, and optionally owns
 /// the `llama-server` child process it spawned.
 pub struct Engine {
@@ -236,6 +245,116 @@ impl Engine {
             .next()
             .ok_or_else(|| anyhow!("no choices in response: {body}"))?;
         Ok((choice.message, parsed.usage))
+    }
+
+    /// Streaming chat completion. Calls `on_delta` for each text fragment as it
+    /// arrives, and returns the fully accumulated assistant message (content +
+    /// tool_calls) when the stream ends — so the agent loop is unchanged downstream.
+    pub async fn chat_stream(
+        &self,
+        messages: &[ChatMessage],
+        tools: Option<&[ToolSpec]>,
+        tool_choice: Option<serde_json::Value>,
+        max_tokens: Option<u32>,
+        mut on_delta: impl FnMut(&str),
+    ) -> Result<(ChatMessage, Option<Usage>)> {
+        let req = ChatRequest {
+            model: &self.model,
+            messages,
+            tools,
+            tool_choice,
+            stream: true,
+            temperature: self.temperature,
+            max_tokens,
+        };
+        let url = format!("{}/v1/chat/completions", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .json(&req)
+            .timeout(Duration::from_secs(300))
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("llama-server returned {status}: {body}"));
+        }
+
+        let mut content = String::new();
+        let mut tool_accum: Vec<ToolCallAccum> = Vec::new();
+        let mut buf: Vec<u8> = Vec::new();
+        let mut stream = resp.bytes_stream();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.context("reading SSE stream")?;
+            buf.extend_from_slice(&chunk);
+            // Process complete '\n'-terminated lines ('\n' never appears mid-UTF-8-char).
+            while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = buf.drain(..=pos).collect();
+                let line = String::from_utf8_lossy(&line);
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let data = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
+                if data == "[DONE]" {
+                    continue;
+                }
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else {
+                    continue;
+                };
+                let Some(choice) = v.get("choices").and_then(|c| c.get(0)) else {
+                    continue;
+                };
+                let delta = &choice["delta"];
+                if let Some(c) = delta.get("content").and_then(|c| c.as_str()) {
+                    content.push_str(c);
+                    on_delta(c);
+                }
+                if let Some(tcs) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+                    for tc in tcs {
+                        let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                        while tool_accum.len() <= idx {
+                            tool_accum.push(ToolCallAccum::default());
+                        }
+                        let acc = &mut tool_accum[idx];
+                        if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
+                            if !id.is_empty() {
+                                acc.id = id.to_string();
+                            }
+                        }
+                        if let Some(name) = tc.pointer("/function/name").and_then(|n| n.as_str()) {
+                            acc.name.push_str(name);
+                        }
+                        if let Some(args) = tc.pointer("/function/arguments").and_then(|a| a.as_str()) {
+                            acc.arguments.push_str(args);
+                        }
+                    }
+                }
+            }
+        }
+
+        let tool_calls: Vec<ToolCall> = tool_accum
+            .into_iter()
+            .filter(|a| !a.name.is_empty())
+            .enumerate()
+            .map(|(i, a)| ToolCall {
+                id: if a.id.is_empty() { format!("call_{i}") } else { a.id },
+                call_type: "function".to_string(),
+                function: FunctionCall { name: a.name, arguments: a.arguments },
+            })
+            .collect();
+
+        let msg = ChatMessage {
+            role: Role::Assistant,
+            content: if content.is_empty() { None } else { Some(content) },
+            tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            tool_call_id: None,
+            name: None,
+        };
+        Ok((msg, None))
     }
 
     /// GET /health (llama-server) — returns Ok when the server is ready.

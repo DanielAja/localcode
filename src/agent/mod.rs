@@ -82,14 +82,19 @@ impl Agent {
         // If the user asked to run/verify/test, require an actual bash call before finishing.
         let needs_verify = self.last_user_text().map(|t| mentions_verification(&t)).unwrap_or(false);
         let mut bash_ran = false;
+        // Whether any tool has run this turn — used to push the model into acting if it
+        // only narrates a plan on the first move.
+        let mut any_tool_ran = false;
         // NOTE: we tried forcing tool_choice="required" on recovery turns, but it makes
         // llama-server hang for this Qwen2.5-Coder-7B GGUF (a GBNF grammar pathology).
         // So recovery relies on nudges + the echo guard instead.
         for _turn in 0..self.max_turns {
+            ui.stream_start();
             let (assistant, _usage) = self
                 .engine
-                .chat(&self.messages, Some(&self.specs), None, None)
+                .chat_stream(&self.messages, Some(&self.specs), None, None, |p| ui.stream_delta(p))
                 .await?;
+            ui.stream_end();
 
             let extracted = toolcall::extract(&assistant);
 
@@ -114,11 +119,11 @@ impl Agent {
                 // in <tool_response> tags) instead of acting; treat that as a recovery case.
                 let echoing = trimmed.contains("<tool_response>") || trimmed.contains("</tool_response>");
                 let want_verify = needs_verify && !bash_ran;
-                if nudges > 0 && (pending_error || want_verify || echoing || looks_unfinished(&trimmed)) {
+                // In a coding agent the first move should be a tool call; if the model
+                // only narrated a plan and did nothing, push it to act.
+                let only_narrated = !any_tool_ran && !trimmed.is_empty();
+                if nudges > 0 && (pending_error || want_verify || echoing || only_narrated || looks_unfinished(&trimmed)) {
                     nudges -= 1;
-                    if !trimmed.is_empty() && !echoing {
-                        ui.assistant_message(&trimmed);
-                    }
                     // Error recovery takes priority over verification: if the last tool
                     // failed (or the model echoed), it must retry with a real tool call.
                     let nudge = if pending_error || echoing {
@@ -133,24 +138,20 @@ impl Agent {
                 }
                 if echoing {
                     ui.notice("Model kept repeating tool output and could not progress — stopping. Use interactive approval mode or a larger model (e.g. qwen3-coder-30b).");
-                } else {
-                    ui.assistant_message(if trimmed.is_empty() { "(no response)" } else { &trimmed });
+                } else if trimmed.is_empty() {
+                    ui.notice("(no response)");
                 }
                 return Ok(());
             }
 
-            // Interim prose alongside tool calls.
-            if let Some(t) = &extracted.text {
-                if !t.trim().is_empty() {
-                    ui.assistant_message(t.trim());
-                }
-            }
+            // (any interim prose alongside tool calls was already streamed live above)
 
             // Execute every tool call. We MUST answer each tool_call_id with a tool
             // message or the next request is malformed — so guards never skip that.
             let mut loop_detected = false;
             for call in &extracted.calls {
                 pending_error = true; // cleared on a successful tool run below
+                any_tool_ran = true;
                 let name = call.function.name.clone();
                 let raw_args = &call.function.arguments;
 
@@ -243,12 +244,12 @@ impl Agent {
                     "You are repeating the same tool call without progress. Stop, summarize what you have done and what is blocking you, and ask me how to proceed.",
                 ));
                 // One more model turn to let it summarize, then we return.
-                let (assistant, _) = self
+                ui.stream_start();
+                let _ = self
                     .engine
-                    .chat(&self.messages, Some(&self.specs), None, None)
+                    .chat_stream(&self.messages, Some(&self.specs), None, None, |p| ui.stream_delta(p))
                     .await?;
-                let ex = toolcall::extract(&assistant);
-                ui.assistant_message(ex.text.unwrap_or_default().trim());
+                ui.stream_end();
                 return Ok(());
             }
         }
