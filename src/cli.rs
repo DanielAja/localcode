@@ -175,22 +175,23 @@ async fn cmd_run(cli: Cli) -> Result<()> {
         return Ok(());
     }
 
+    let n_ctx = config.as_ref().map(|c| c.n_ctx as usize).unwrap_or(16384);
     print_banner(&alias, &workspace);
     while let Some(line) = read_line(&format!("{} ", style::paint(style::BLUE, "you›"))) {
         let input = line.trim();
         if input.is_empty() {
             continue;
         }
-        if input == "/exit" || input == "/quit" {
-            break;
-        }
-        if input == "/help" {
-            println!("Commands: /exit, /quit, /help. Otherwise just type your request.");
-            continue;
-        }
-        agent.push_user(input);
-        if let Err(e) = agent.run_turn(&mut ui).await {
-            eprintln!("{}", style::paint(style::RED, &format!("error: {e:#}")));
+        match crate::commands::handle(input, &mut agent, &mut ui, &workspace, &alias, n_ctx).await {
+            Ok(crate::commands::Action::Quit) => break,
+            Ok(crate::commands::Action::Handled) => {}
+            Ok(crate::commands::Action::Passthrough(text)) => {
+                agent.push_user(text);
+                if let Err(e) = agent.run_turn(&mut ui).await {
+                    eprintln!("{}", style::paint(style::RED, &format!("error: {e:#}")));
+                }
+            }
+            Err(e) => eprintln!("{}", style::paint(style::RED, &format!("error: {e:#}"))),
         }
     }
     println!("bye.");

@@ -2,6 +2,7 @@
 //! tool calls (approval-gated), feed results back, repeat until the model stops
 //! calling tools or we hit a guard (max turns / loop detection).
 
+use crate::config::SandboxLevel;
 use crate::engine::{ChatMessage, Engine, Role, ToolSpec};
 use crate::permissions::{Decision, Policy};
 use crate::toolcall;
@@ -72,6 +73,77 @@ impl Agent {
             .rev()
             .find(|m| matches!(m.role, Role::User))
             .and_then(|m| m.content.clone())
+    }
+
+    /// Reset the conversation, keeping only the system prompt.
+    pub fn reset(&mut self) {
+        self.messages.truncate(1);
+    }
+
+    /// Number of non-system messages currently in context.
+    pub fn message_count(&self) -> usize {
+        self.messages.len().saturating_sub(1)
+    }
+
+    /// Rough token estimate of the current context (~4 chars/token).
+    pub fn approx_tokens(&self) -> usize {
+        let chars: usize = self.messages.iter().filter_map(|m| m.content.as_ref()).map(|c| c.len()).sum();
+        chars / 4
+    }
+
+    /// Run a tool directly (used by slash commands like /web).
+    pub fn run_tool(&self, name: &str, args: serde_json::Value) -> Result<crate::tools::ToolOutput> {
+        let tool = self
+            .registry
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("no such tool: {name}"))?;
+        tool.run(&args, &self.ctx)
+    }
+
+    pub fn sandbox_level(&self) -> SandboxLevel {
+        self.policy.level
+    }
+
+    /// Change the sandbox level at runtime (keeps policy + tool context in sync).
+    pub fn set_sandbox(&mut self, level: SandboxLevel) {
+        self.policy.level = level;
+        self.ctx.sandbox = level;
+    }
+
+    /// Compact the conversation into a summary to free context. Returns summary length.
+    pub async fn compact(&mut self, focus: Option<&str>) -> Result<usize> {
+        if self.messages.len() <= 2 {
+            return Ok(0);
+        }
+        let mut convo = String::new();
+        for m in self.messages.iter().skip(1) {
+            let role = match m.role {
+                Role::User => "User",
+                Role::Assistant => "Assistant",
+                Role::Tool => "Tool",
+                Role::System => "System",
+            };
+            if let Some(c) = &m.content {
+                if !c.trim().is_empty() {
+                    convo.push_str(&format!("{role}: {c}\n"));
+                }
+            }
+        }
+        let focus_line = focus.map(|f| format!(" Pay special attention to: {f}.")).unwrap_or_default();
+        let prompt = vec![
+            ChatMessage::system("You compress a coding session into a concise hand-off note so work can continue."),
+            ChatMessage::user(format!(
+                "Summarize the conversation below: keep key decisions, file paths, what was done, and the current state / next step.{focus_line}\n\n{convo}"
+            )),
+        ];
+        let (msg, _) = self.engine.chat(&prompt, None, None, Some(700)).await?;
+        let summary = msg.content.unwrap_or_default();
+        let system = self.messages[0].clone();
+        self.messages = vec![
+            system,
+            ChatMessage::user(format!("[Summary of earlier conversation]\n{}", summary.trim())),
+        ];
+        Ok(summary.len())
     }
 
     /// Run one user request to completion (model stops calling tools, or a guard fires).
