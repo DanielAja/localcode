@@ -13,6 +13,7 @@ pub mod hardware;
 pub mod models;
 pub mod onboarding;
 pub mod permissions;
+pub mod session;
 pub mod toolcall;
 pub mod tools;
 pub mod ui;

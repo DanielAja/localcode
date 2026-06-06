@@ -80,6 +80,18 @@ impl Agent {
         self.messages.truncate(1);
     }
 
+    /// Snapshot the full message history (for session persistence).
+    pub fn snapshot(&self) -> Vec<ChatMessage> {
+        self.messages.clone()
+    }
+
+    /// Replace the message history (resume a saved session).
+    pub fn restore(&mut self, msgs: Vec<ChatMessage>) {
+        if !msgs.is_empty() {
+            self.messages = msgs;
+        }
+    }
+
     /// Number of non-system messages currently in context.
     pub fn message_count(&self) -> usize {
         self.messages.len().saturating_sub(1)

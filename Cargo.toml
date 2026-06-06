@@ -50,6 +50,9 @@ glob = "0.3"
 # diff rendering for edit approvals
 similar = "2"
 
+# session persistence (bundled SQLite — no system dependency)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 # hardware scan + downloads (M3)
 sysinfo = "0.33"
 sha2 = "0.10"

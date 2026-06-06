@@ -7,7 +7,7 @@ use crate::engine::{
     provision, Engine,
 };
 use crate::permissions::Policy;
-use crate::ui::{style, LineUi};
+use crate::ui::{style, LineUi, Ui};
 use crate::{eval, hardware, models, onboarding, tools};
 use crate::Result;
 use anyhow::{anyhow, Context};
@@ -35,6 +35,10 @@ pub struct Cli {
     #[arg(long, value_name = "PROMPT", global = true)]
     print: Option<String>,
 
+    /// Resume the most recent session for this workspace.
+    #[arg(long, global = true)]
+    resume: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -53,6 +57,8 @@ enum Commands {
     Eval,
     /// Keep a warmed model server running so other runs start instantly.
     Serve,
+    /// List saved sessions.
+    Sessions,
 }
 
 pub async fn run() -> Result<()> {
@@ -75,8 +81,30 @@ pub async fn run() -> Result<()> {
         Some(Commands::Setup) => onboarding::run_wizard().await.map(|_| ()),
         Some(Commands::Eval) => cmd_eval(cli).await,
         Some(Commands::Serve) => cmd_serve().await,
+        Some(Commands::Sessions) => cmd_sessions(),
         Some(Commands::Run) | None => cmd_run(cli).await,
     }
+}
+
+fn cmd_sessions() -> Result<()> {
+    let store = crate::session::Store::open()?;
+    let list = store.list(20)?;
+    if list.is_empty() {
+        println!("no saved sessions yet.");
+        return Ok(());
+    }
+    println!("{}", style::paint(style::BOLD, "recent sessions:"));
+    for s in list {
+        println!(
+            "  #{:<4} {:>2} turns  {:<9} {}",
+            s.id,
+            s.turns,
+            crate::session::ago(s.updated_at),
+            style::paint(style::GREY, &s.workspace)
+        );
+    }
+    println!("\n{}", style::paint(style::GREY, "resume the latest for a workspace with: localcode --resume"));
+    Ok(())
 }
 
 async fn cmd_eval(cli: Cli) -> Result<()> {
@@ -176,9 +204,34 @@ async fn cmd_run(cli: Cli) -> Result<()> {
     );
     let mut ui = LineUi::new(non_interactive);
 
+    // Session persistence (per workspace).
+    let ws_key = workspace.display().to_string();
+    let store = crate::session::Store::open().ok();
+    let mut session_id: Option<i64> = None;
+    if let Some(st) = &store {
+        if cli.resume {
+            if let Ok(Some((id, msgs))) = st.latest_for(&ws_key) {
+                let n = msgs.len().saturating_sub(1);
+                agent.restore(msgs);
+                session_id = Some(id);
+                ui.notice(&format!("resumed session #{id} ({n} messages)"));
+            }
+        }
+        if session_id.is_none() {
+            let title = workspace
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| ws_key.clone());
+            session_id = st.create(&ws_key, &title).ok();
+        }
+    }
+
     if let Some(prompt) = cli.print {
         agent.push_user(prompt);
         agent.run_turn(&mut ui).await?;
+        if let (Some(st), Some(id)) = (&store, session_id) {
+            let _ = st.save(id, &agent.snapshot());
+        }
         return Ok(());
     }
 
@@ -199,6 +252,9 @@ async fn cmd_run(cli: Cli) -> Result<()> {
                 }
             }
             Err(e) => eprintln!("{}", style::paint(style::RED, &format!("error: {e:#}"))),
+        }
+        if let (Some(st), Some(id)) = (&store, session_id) {
+            let _ = st.save(id, &agent.snapshot());
         }
     }
     println!("bye.");
