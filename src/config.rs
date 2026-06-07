@@ -70,6 +70,10 @@ pub struct Config {
     /// KV-cache quantization. Default q8_0; NEVER q4_0 (degrades tool-calling).
     #[serde(default = "default_kv_quant")]
     pub kv_quant: String,
+    /// Opt-in: route prompts through the architect→editor (plan-then-edit) flow.
+    /// Off by default — the gain for ≤7B coders is modest and it doubles latency.
+    #[serde(default)]
+    pub architect: bool,
 }
 
 fn default_ctx() -> u32 {
@@ -105,6 +109,7 @@ impl Default for Config {
             temperature: default_temp(),
             port: default_port(),
             kv_quant: default_kv_quant(),
+            architect: false,
         }
     }
 }

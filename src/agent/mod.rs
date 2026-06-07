@@ -2,6 +2,8 @@
 //! tool calls (approval-gated), feed results back, repeat until the model stops
 //! calling tools or we hit a guard (max turns / loop detection).
 
+pub mod architect;
+
 use crate::config::SandboxLevel;
 use crate::engine::{ChatMessage, Engine, Role, ToolSpec};
 use crate::permissions::{Decision, Policy};
@@ -73,6 +75,27 @@ impl Agent {
             .rev()
             .find(|m| matches!(m.role, Role::User))
             .and_then(|m| m.content.clone())
+    }
+
+    /// Text of the most recent assistant message (used by the architect pass to
+    /// capture the produced plan).
+    pub fn last_assistant_text(&self) -> Option<String> {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, Role::Assistant))
+            .and_then(|m| m.content.clone())
+    }
+
+    /// Whether narrate-nudges are active.
+    pub fn autonomous(&self) -> bool {
+        self.autonomous
+    }
+
+    /// Toggle narrate-nudges (the architect pass turns them off so a prose plan
+    /// isn't pushed back toward tool calls).
+    pub fn set_autonomous(&mut self, on: bool) {
+        self.autonomous = on;
     }
 
     /// Reset the conversation, keeping only the system prompt.

@@ -7,6 +7,7 @@
 
 pub mod llama_server;
 pub mod provision;
+pub mod server_install;
 
 use crate::Result;
 use anyhow::{anyhow, Context};

@@ -12,7 +12,7 @@ use crate::{eval, hardware, models, onboarding, tools};
 use crate::Result;
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
@@ -38,6 +38,14 @@ pub struct Cli {
     /// Resume the most recent session for this workspace.
     #[arg(long, global = true)]
     resume: bool,
+
+    /// Route prompts through the architect→editor (plan-then-edit) flow.
+    #[arg(long, global = true)]
+    architect: bool,
+
+    /// Use the inline-viewport TUI instead of the default line mode (interactive only).
+    #[arg(long, global = true)]
+    tui: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -124,15 +132,35 @@ fn cmd_doctor() -> Result<()> {
     let bin = provision::find_llama_server(None);
     match &bin {
         Ok(p) => println!("Server: llama-server at {}", p.display()),
-        Err(_) => println!("Server: {}", style::paint(style::RED, "llama-server NOT FOUND (brew install llama.cpp)")),
+        Err(_) => match crate::engine::server_install::find_managed() {
+            Some(p) => println!("Server: auto-installed llama-server at {}", p.display()),
+            None => {
+                let (os, arch) = (
+                    crate::engine::server_install::host_os(),
+                    crate::engine::server_install::host_arch(),
+                );
+                let can_dl = !matches!(os, crate::engine::server_install::Os::Other)
+                    && !matches!(arch, crate::engine::server_install::Arch::Other);
+                if can_dl {
+                    println!(
+                        "Server: {} ({})",
+                        style::paint(style::YELLOW, "not installed — will auto-download a prebuilt on first run"),
+                        style::paint(style::GREY, "or `brew install llama.cpp`"),
+                    );
+                } else {
+                    println!("Server: {}", style::paint(style::RED, "llama-server NOT FOUND (install llama.cpp manually)"));
+                }
+            }
+        },
     }
     let net_enforced = crate::permissions::sandbox::network_enforced(SandboxLevel::WorkspaceWrite);
+    let backend = crate::permissions::sandbox::backend_label();
     println!(
         "Sandbox: bash network {}",
         if net_enforced {
-            "DENIED (Seatbelt, workspace-write)"
+            format!("DENIED via {backend} (workspace-write)")
         } else {
-            "not OS-enforced on this platform (approval-gated only)"
+            format!("not OS-enforced on this platform — approval-gated + path-jail ({backend})")
         }
     );
 
@@ -202,7 +230,21 @@ async fn cmd_run(cli: Cli) -> Result<()> {
         bash_timeout,
         true, // autonomous: nudge the model back to tools if it narrates
     );
-    let mut ui = LineUi::new(non_interactive);
+    // Default to the proven line mode; opt into the inline-viewport TUI with --tui
+    // (interactive TTY only — never under --print or a pipe).
+    let use_tui = cli.tui && !non_interactive && std::io::stdout().is_terminal();
+    let mut ui: Box<dyn Ui> = if use_tui {
+        match crate::tui::TuiUi::new() {
+            Ok(t) => Box::new(t),
+            Err(e) => {
+                eprintln!("{}", style::paint(style::YELLOW, &format!("TUI unavailable ({e}); using line mode")));
+                Box::new(LineUi::new(non_interactive))
+            }
+        }
+    } else {
+        Box::new(LineUi::new(non_interactive))
+    };
+    let architect_mode = cli.architect || config.as_ref().map(|c| c.architect).unwrap_or(false);
 
     // Session persistence (per workspace).
     let ws_key = workspace.display().to_string();
@@ -227,8 +269,12 @@ async fn cmd_run(cli: Cli) -> Result<()> {
     }
 
     if let Some(prompt) = cli.print {
-        agent.push_user(prompt);
-        agent.run_turn(&mut ui).await?;
+        if architect_mode {
+            agent::architect::architect_editor(&mut agent, &prompt, ui.as_mut()).await?;
+        } else {
+            agent.push_user(prompt);
+            agent.run_turn(ui.as_mut()).await?;
+        }
         if let (Some(st), Some(id)) = (&store, session_id) {
             let _ = st.save(id, &agent.snapshot());
         }
@@ -236,28 +282,34 @@ async fn cmd_run(cli: Cli) -> Result<()> {
     }
 
     let n_ctx = config.as_ref().map(|c| c.n_ctx as usize).unwrap_or(16384);
-    print_banner(&alias, &workspace);
-    while let Some(line) = read_line(&format!("{} ", style::paint(style::BLUE, "you›"))) {
+    print_banner(ui.as_mut(), &alias, &workspace, architect_mode, use_tui);
+    let prompt = format!("{} ", style::paint(style::BLUE, "you›"));
+    while let Some(line) = ui.read_line(&prompt) {
         let input = line.trim();
         if input.is_empty() {
             continue;
         }
-        match crate::commands::handle(input, &mut agent, &mut ui, &workspace, &alias, n_ctx).await {
+        match crate::commands::handle(input, &mut agent, ui.as_mut(), &workspace, &alias, n_ctx).await {
             Ok(crate::commands::Action::Quit) => break,
             Ok(crate::commands::Action::Handled) => {}
             Ok(crate::commands::Action::Passthrough(text)) => {
-                agent.push_user(text);
-                if let Err(e) = agent.run_turn(&mut ui).await {
-                    eprintln!("{}", style::paint(style::RED, &format!("error: {e:#}")));
+                let result = if architect_mode {
+                    agent::architect::architect_editor(&mut agent, &text, ui.as_mut()).await
+                } else {
+                    agent.push_user(text);
+                    agent.run_turn(ui.as_mut()).await
+                };
+                if let Err(e) = result {
+                    ui.notice(&format!("error: {e:#}"));
                 }
             }
-            Err(e) => eprintln!("{}", style::paint(style::RED, &format!("error: {e:#}"))),
+            Err(e) => ui.notice(&format!("error: {e:#}")),
         }
         if let (Some(st), Some(id)) = (&store, session_id) {
             let _ = st.save(id, &agent.snapshot());
         }
     }
-    println!("bye.");
+    ui.history_block("bye.");
     Ok(())
 }
 
@@ -297,7 +349,9 @@ async fn spawn_server(cfg: &Config) -> Result<LlamaServer> {
                 config::models_dir().display()
             )
         })?;
-    let bin = provision::find_llama_server(cfg.llama_server_bin.as_deref())?;
+    let bin = crate::engine::server_install::ensure_llama_server(cfg.llama_server_bin.as_deref())
+        .await
+        .context("locating or downloading llama-server")?;
     let opts = ServerOpts {
         bin,
         model_path: model_path.clone(),
@@ -353,32 +407,22 @@ async fn cmd_serve() -> Result<()> {
     Ok(())
 }
 
-fn print_banner(alias: &str, workspace: &std::path::Path) {
-    println!(
-        "\n{} {}",
-        style::paint(style::CYAN, "◢◤ localcode"),
-        style::paint(style::GREY, "· on-device AI coding — everything stays local")
-    );
-    println!(
-        "  {} {}   {} {}",
+fn print_banner(ui: &mut dyn Ui, alias: &str, workspace: &std::path::Path, architect: bool, tui: bool) {
+    let mut modes = Vec::new();
+    if architect {
+        modes.push("architect");
+    }
+    modes.push(if tui { "tui" } else { "line" });
+    let banner = format!(
+        "{}\n  {} {}   {} {}   {} {}\n  {}",
+        style::paint(style::CYAN, "◢◤ localcode · on-device AI coding — everything stays local"),
         style::paint(style::GREY, "model"),
         style::paint(style::BOLD, alias),
+        style::paint(style::GREY, "mode"),
+        style::paint(style::GREY, &modes.join("+")),
         style::paint(style::GREY, "workspace"),
         style::paint(style::GREY, &workspace.display().to_string()),
+        style::paint(style::GREY, "type a request, or /help · /exit to quit"),
     );
-    println!(
-        "  {}\n",
-        style::paint(style::GREY, "type a request, or /help · /exit to quit")
-    );
-}
-
-fn read_line(prompt: &str) -> Option<String> {
-    print!("{prompt}");
-    std::io::stdout().flush().ok();
-    let mut line = String::new();
-    match std::io::stdin().read_line(&mut line) {
-        Ok(0) => None,
-        Ok(_) => Some(line),
-        Err(_) => None,
-    }
+    ui.history_block(&banner);
 }

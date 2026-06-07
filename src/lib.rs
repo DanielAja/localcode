@@ -16,6 +16,7 @@ pub mod permissions;
 pub mod session;
 pub mod toolcall;
 pub mod tools;
+pub mod tui;
 pub mod ui;
 
 /// Crate-wide result alias.

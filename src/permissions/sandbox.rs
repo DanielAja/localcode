@@ -4,8 +4,13 @@
 //! levels — enforcing "network off by default" while still allowing local file and
 //! build tools. `full` runs unconfined.
 //!
-//! Linux/Windows: network-deny is not yet OS-enforced (roadmap: Landlock / Job
-//! Objects). The workspace path-jail on file tools and the approval gate still apply.
+//! Linux: Landlock (best-effort, ABI V4+/Linux 6.7) denies network to the shell —
+//! the same network-only policy as macOS — leaving the filesystem to the path-jail
+//! so build caches in `$HOME` keep working. Degrades cleanly on older kernels.
+//!
+//! Windows: OS-level FS isolation (AppContainer) is high-complexity and breaks many
+//! dev tools, so we deliberately rely on the userland path-jail + approval gate
+//! there. The workspace path-jail on file tools applies on every platform.
 
 use crate::config::SandboxLevel;
 use std::process::Command;
@@ -29,9 +34,19 @@ fn build(level: SandboxLevel, command: &str) -> Command {
     c
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(target_os = "linux")]
+fn build(level: SandboxLevel, command: &str) -> Command {
+    let mut c = plain_sh(command);
+    if !matches!(level, SandboxLevel::Full) {
+        // Deny network via Landlock (best-effort), matching the macOS policy.
+        super::landlock_linux::deny_network(&mut c);
+    }
+    c
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
 fn build(_level: SandboxLevel, command: &str) -> Command {
-    // TODO(roadmap): Landlock + a network namespace for true confinement.
+    // Other unix (BSD, etc.): no OS sandbox yet; path-jail + approval gate apply.
     plain_sh(command)
 }
 
@@ -51,6 +66,19 @@ fn build(_level: SandboxLevel, command: &str) -> Command {
 }
 
 /// Whether OS-level network denial is enforced for bash on this platform/level.
+/// (Linux Landlock is best-effort — true here means "attempted/enforced where the
+/// kernel supports it", ABI V4+/Linux 6.7.)
 pub fn network_enforced(level: SandboxLevel) -> bool {
-    cfg!(target_os = "macos") && !matches!(level, SandboxLevel::Full)
+    (cfg!(target_os = "macos") || cfg!(target_os = "linux")) && !matches!(level, SandboxLevel::Full)
+}
+
+/// Human-readable name of the active OS sandbox backend (for `doctor`).
+pub fn backend_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Seatbelt"
+    } else if cfg!(target_os = "linux") {
+        "Landlock (best-effort, needs Linux 6.7+)"
+    } else {
+        "path-jail only"
+    }
 }

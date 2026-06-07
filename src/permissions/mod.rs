@@ -1,6 +1,8 @@
 //! Permission policy: which tool calls run automatically, which need approval.
 
 pub mod diff;
+#[cfg(target_os = "linux")]
+pub mod landlock_linux;
 pub mod sandbox;
 
 use crate::config::SandboxLevel;

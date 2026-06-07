@@ -36,7 +36,7 @@ pub async fn handle(
 
     match cmd {
         "exit" | "quit" | "q" => return Ok(Action::Quit),
-        "help" | "?" => print_help(),
+        "help" | "?" => print_help(ui),
         "clear" | "new" => {
             agent.reset();
             ui.notice("context cleared — fresh conversation.");
@@ -63,7 +63,7 @@ pub async fn handle(
             if d.trim().is_empty() {
                 ui.notice("no uncommitted changes.");
             } else {
-                print_block(&d);
+                ui.history_block(&d);
             }
         }
         "compact" => {
@@ -101,7 +101,7 @@ pub async fn handle(
                 ui.notice("usage: /web <query>");
             } else {
                 match agent.run_tool("web_search", serde_json::json!({"query": arg, "max_results": 6})) {
-                    Ok(o) => print_block(&o.content),
+                    Ok(o) => ui.history_block(&o.content),
                     Err(e) => ui.notice(&format!("web search failed: {e}")),
                 }
             }
@@ -116,11 +116,18 @@ pub async fn handle(
                 agent.run_turn(ui).await?;
             }
         }
+        "architect" | "plan" => {
+            if arg.is_empty() {
+                ui.notice("usage: /architect <task>  — plan read-only, then apply the plan");
+            } else {
+                crate::agent::architect::architect_editor(agent, arg, ui).await?;
+            }
+        }
 
         // --- easter eggs: rare, instant, removable ---
         "coffee" => ui.notice("☕  brewing… done. caffeinated and unstoppable."),
         "zen" => ui.notice(zen()),
-        "moo" => print_block(MOO),
+        "moo" => ui.history_block(MOO),
         "konami" => ui.notice("↑ ↑ ↓ ↓ ← → ← → B A  —  +30 lives. now go ship something."),
         "sl" => ui.notice("🚂  choo-choo! (that was /sl, not /ls — take a breath)"),
 
@@ -155,7 +162,7 @@ fn sandbox_cmd(arg: &str, agent: &mut Agent, ui: &mut dyn Ui) {
     ui.notice(&format!("sandbox set to {}.", level_name(lvl)));
 }
 
-fn print_help() {
+fn print_help(ui: &mut dyn Ui) {
     let lines = [
         "/help             show this help",
         "/clear  (/new)    reset the conversation",
@@ -168,12 +175,15 @@ fn print_help() {
         "/init             write an AGENTS.md for this project",
         "/web <query>      quick web search",
         "/research <topic> deep web research with sources",
+        "/architect <task> plan read-only, then apply (plan-then-edit)",
         "/exit   (/quit)   leave",
     ];
+    let mut block = String::new();
     for l in lines {
-        println!("  {}", style::paint(style::CYAN, l));
+        block.push_str(&format!("  {}\n", style::paint(style::CYAN, l)));
     }
-    println!("  {}", style::paint(style::GREY, "(psst — try /coffee, /zen, /moo)"));
+    block.push_str(&format!("  {}", style::paint(style::GREY, "(psst — try /coffee, /zen, /moo)")));
+    ui.history_block(&block);
 }
 
 fn git(workspace: &Path, args: &[&str]) -> String {
@@ -187,10 +197,6 @@ fn git(workspace: &Path, args: &[&str]) -> String {
         }
         Err(e) => format!("git not available: {e}"),
     }
-}
-
-fn print_block(s: &str) {
-    println!("{}", s.trim_end());
 }
 
 fn truncate(s: &str, max: usize) -> String {

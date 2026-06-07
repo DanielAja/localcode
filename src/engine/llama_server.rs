@@ -51,6 +51,28 @@ impl LlamaServer {
         if opts.jinja {
             cmd.arg("--jinja");
         }
+        // An auto-downloaded server keeps its shared libs (libllama, libggml-*, …)
+        // beside the binary; make sure the loader can find them regardless of rpath.
+        if let Some(dir) = opts.bin.parent() {
+            let dir = dir.to_path_buf();
+            let prepend = |existing: Option<std::ffi::OsString>| -> std::ffi::OsString {
+                match existing {
+                    Some(prev) if !prev.is_empty() => {
+                        let mut s = dir.clone().into_os_string();
+                        s.push(if cfg!(windows) { ";" } else { ":" });
+                        s.push(prev);
+                        s
+                    }
+                    _ => dir.clone().into_os_string(),
+                }
+            };
+            #[cfg(target_os = "macos")]
+            cmd.env("DYLD_LIBRARY_PATH", prepend(std::env::var_os("DYLD_LIBRARY_PATH")));
+            #[cfg(all(unix, not(target_os = "macos")))]
+            cmd.env("LD_LIBRARY_PATH", prepend(std::env::var_os("LD_LIBRARY_PATH")));
+            #[cfg(windows)]
+            cmd.env("PATH", prepend(std::env::var_os("PATH")));
+        }
         let quantized = !opts.kv_quant.is_empty() && opts.kv_quant != "f16";
         if quantized {
             cmd.arg("-ctk")

@@ -22,6 +22,25 @@ pub trait Ui {
     fn stream_delta(&mut self, _piece: &str) {}
     /// End a streamed assistant message.
     fn stream_end(&mut self) {}
+
+    // --- input + verbatim output (default = line mode; TUI overrides) ---
+    /// Read one line of user input, showing `prompt`. `None` on EOF / quit.
+    fn read_line(&mut self, prompt: &str) -> Option<String> {
+        use std::io::Write;
+        print!("{prompt}");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        match std::io::stdin().read_line(&mut line) {
+            Ok(0) => None,
+            Ok(_) => Some(line),
+            Err(_) => None,
+        }
+    }
+
+    /// Emit a verbatim block to the transcript (command output, diffs, help, …).
+    fn history_block(&mut self, text: &str) {
+        println!("{}", text.trim_end());
+    }
 }
 
 /// Simple ANSI helpers (kept dependency-free).
